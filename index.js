@@ -241,7 +241,54 @@ function verifiedExperienceAnswer(text) {
   return null;
 }
 
-function fixedAnswer(text, userKey, current) {
+function getAdditionalQuestion(text) {
+  // 予約希望の定型表現だけを取り除く
+  const cleaned = text
+    .replace(/予約したいんですが[、,]*/g, '')
+    .replace(/予約したいのですが[、,]*/g, '')
+    .replace(/予約したいです[。！!、,]*/g, '')
+    .replace(/予約希望です[。！!、,]*/g, '')
+    .replace(/予約をお願いします[。！!、,]*/g, '')
+    .trim();
+
+  // 予約自体の可否を尋ねている場合は、
+  // 別の質問として扱わない
+  if (/^(今日|明日|明後日|本日)?.*予約(できますか|可能ですか|できますでしょうか)[？?]?$/.test(cleaned)) {
+    return '';
+  }
+
+  if (cleaned === text && !/[？?]|できますか|でしょうか|教えて|いくら|ありますか/.test(cleaned)) {
+    return '';
+  }
+
+  if (!cleaned || !/[？?]|ですか|ますか|でしょうか|教えて|いくら/.test(cleaned)) {
+    return '';
+  }
+
+  return cleaned;
+}
+
+async function answerAdditionalQuestion(question) {
+  // 絶対に間違えてはいけない店舗ルール
+  if (/見学|付き添い|参加しない|見るだけ/.test(question)) {
+    return '当店では、大人の方も含め、原則として皆様に体験へのご参加をお願いしております。見学のみのご利用はできません。';
+  }
+
+  if (/藍染|染め物|染物|墨染|ワイン染/.test(question)) {
+    return verifiedExperienceAnswer(question);
+  }
+
+  // その他の質問は店舗情報を使ってAIが回答
+  return await callOpenAI(
+    '以下の文章に含まれる、予約手続き以外の質問だけに回答してください。\n' +
+    '希望日の確認、予約フォーム案内、電話案内は不要です。\n' +
+    '不明な事実は推測しないでください。\n\n' +
+    question
+  );
+}
+
+
+async function fixedAnswer(text, userKey, current) {
   if (isGroup(text)) {
     recent.delete(userKey);
     return groupText();
@@ -269,17 +316,44 @@ function fixedAnswer(text, userKey, current) {
     );
   }
 
-  if (looksLikeBooking(text)) {
-    const days = detectDate(text, current);
 
-    if (days === null) {
-      recent.set(userKey, {
-        kind: 'await-date',
-        expires: Date.now() + TTL
-      });
-    } else {
-      recent.delete(userKey);
-    }
+if (looksLikeBooking(text)) {
+  const days = detectDate(text, current);
+
+  // 予約とは別の質問も探す
+  const additionalQuestion = getAdditionalQuestion(text);
+
+  let questionAnswer = '';
+
+  if (additionalQuestion) {
+    questionAnswer =
+      await answerAdditionalQuestion(additionalQuestion);
+  }
+
+  if (days === null) {
+    recent.set(userKey, {
+      kind: 'await-date',
+      expires: Date.now() + TTL
+    });
+  } else {
+    recent.delete(userKey);
+  }
+
+  const reservationAnswer = bookingText(days, current);
+
+  // 質問への回答と予約案内を1通にまとめる
+  if (questionAnswer) {
+    return (
+      'お問い合わせありがとうございます。\n\n' +
+      questionAnswer +
+      '\n\n' +
+      reservationAnswer
+    );
+  }
+
+  return reservationAnswer;
+}
+
 
     return bookingText(days, current);
   }
@@ -496,9 +570,15 @@ app.post(
         try {
           const text = event.message.text.trim();
 
-          const answer =
-            fixedAnswer(text, userKey, nowJST()) ||
-            await callOpenAI(text);
+          
+const fixed = await fixedAnswer(
+  text,
+  userKey,
+  nowJST()
+);
+
+const answer = fixed || await callOpenAI(text);
+
 
           await sendLINE(event.replyToken, answer);
 
