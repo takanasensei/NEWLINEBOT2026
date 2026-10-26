@@ -1,19 +1,15 @@
 
 'use strict';
-
 require('dotenv').config();
-
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
 const app = express();
-
 const PORT = Number(process.env.PORT || 3000);
 const BOT_ENABLED = process.env.BOT_ENABLED === 'true';
 const SAME_DAY_FORM_UNTIL_9 = process.env.SAME_DAY_FORM_UNTIL_9 === 'true';
-
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const SECRET = process.env.CHANNEL_SECRET || '';
 const LINE_TOKEN = process.env.CHANNEL_ACCESS_TOKEN || '';
@@ -25,11 +21,9 @@ const info = JSON.parse(
 
 const recent = new Map();
 const seen = new Map();
-
 const TTL = 30 * 60 * 1000;
 const JST = 'Asia/Tokyo';
 
-// 日本時間を取得
 function nowJST() {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: JST,
@@ -48,25 +42,13 @@ function nowJST() {
   );
 }
 
-// 日付の確認
 function validDate(year, month, day) {
   const d = new Date(Date.UTC(year, month - 1, day));
-
   return (
     d.getUTCFullYear() === year &&
     d.getUTCMonth() === month - 1 &&
     d.getUTCDate() === day
   );
-}
-
-function dateAdd(y, m, d, days) {
-  const x = new Date(Date.UTC(y, m - 1, d + days));
-
-  return [
-    x.getUTCFullYear(),
-    x.getUTCMonth() + 1,
-    x.getUTCDate()
-  ];
 }
 
 function daysBetween(a, b) {
@@ -78,7 +60,6 @@ function daysBetween(a, b) {
   );
 }
 
-// 予約希望日の判定
 function detectDate(text, current) {
   const today = [
     current.year,
@@ -89,14 +70,8 @@ function detectDate(text, current) {
   if (/今日|本日|当日|今から|これから|今すぐ/.test(text)) {
     return 0;
   }
-
-  if (/明後日|あさって/.test(text)) {
-    return 2;
-  }
-
-  if (/明日|あした|翌日/.test(text)) {
-    return 1;
-  }
+  if (/明後日|あさって/.test(text)) return 2;
+  if (/明日|あした|翌日/.test(text)) return 1;
 
   const full = text.match(
     /(20\d{2})[年/.-]\s*(\d{1,2})[月/.-]\s*(\d{1,2})日?/
@@ -104,7 +79,6 @@ function detectDate(text, current) {
 
   if (full) {
     const x = full.slice(1, 4).map(Number);
-
     return validDate(...x)
       ? daysBetween(today, x)
       : 'invalid';
@@ -117,22 +91,15 @@ function detectDate(text, current) {
   if (short) {
     const m = Number(short[1]);
     const d = Number(short[2]);
-
     let y = current.year;
 
-    if (!validDate(y, m, d)) {
-      return 'invalid';
-    }
+    if (!validDate(y, m, d)) return 'invalid';
 
     let delta = daysBetween(today, [y, m, d]);
 
     if (delta < 0) {
       y++;
-
-      if (!validDate(y, m, d)) {
-        return 'invalid';
-      }
-
+      if (!validDate(y, m, d)) return 'invalid';
       delta = daysBetween(today, [y, m, d]);
     }
 
@@ -142,36 +109,27 @@ function detectDate(text, current) {
   return null;
 }
 
-// 団体予約の判定（20名以上）
 function isGroup(text) {
   if (/団体|修学旅行|旅行会社|貸切|大人数/.test(text)) {
     return true;
   }
 
-  return [
-    ...text.matchAll(/(\d{1,3})\s*(名|人)(?!前)/g)
-  ].some(
-    m => Number(m[1]) >= info.reservation.groupThreshold
-  );
+  return [...text.matchAll(/(\d{1,3})\s*(名|人)(?!前)/g)]
+    .some(m => Number(m[1]) >= info.reservation.groupThreshold);
 }
 
-// 予約希望か判定
 function looksLikeBooking(text) {
-  return (
-    /予約したい|予約できます|予約可能|申し込みたい|申込みたい|申し込む|予約をお願い|空きは|空いていますか|空いてる|予約希望|予約したく|予約する|予約お願いします|予約を取りたい/.test(text)
-    ||
-    (
+  return /予約したい|予約できます|予約可能|申し込みたい|申込みたい|申し込む|予約をお願い|空きは|空いていますか|空いてる|予約希望|予約したく|予約する|予約お願いします|予約を取りたい/.test(text)
+    || (
       /予約|申し込|空き状況/.test(text) &&
       !/キャンセル|変更|確認メール|ポリシー|規約|必要ですか|必須ですか|いつまで|方法|どうやって/.test(text)
-    )
-  );
+    );
 }
 
 const formURL = info.reservation.url;
 const phone = info.basicInfo.phone;
 const email = info.basicInfo.email;
 
-// 予約案内
 function bookingText(days, current) {
   if (days === 'invalid') {
     return 'ご希望の日付を確認できませんでした。「10月28日」のようにお送りください。';
@@ -185,15 +143,10 @@ function bookingText(days, current) {
     return '過去の日付では予約できません。改めてご希望日をお知らせください。';
   }
 
-  const lateTomorrow =
-    days === 1 &&
-    current.hour >= 17;
+  const lateTomorrow = days === 1 && current.hour >= 17;
 
   if (
-    (
-      days === 0 &&
-      !(SAME_DAY_FORM_UNTIL_9 && current.hour < 9)
-    ) ||
+    (days === 0 && !(SAME_DAY_FORM_UNTIL_9 && current.hour < 9)) ||
     lateTomorrow
   ) {
     return (
@@ -210,7 +163,6 @@ function bookingText(days, current) {
   );
 }
 
-// 団体予約
 function groupText() {
   return (
     '20名以上の団体予約はスタッフが直接ご案内します。\n' +
@@ -220,46 +172,96 @@ function groupText() {
   );
 }
 
-// 変更・キャンセル
 function cancellationText() {
   return (
     'ご予約の変更・キャンセルについては、スタッフが内容を確認いたします。\n' +
     email +
-    '\nキャンセル規約：' +
-    info.policies.cancellationUrl
+    '\nキャンセル規約：' + info.policies.cancellationUrl
   );
 }
 
-// 自動返信の固定ルール
-function fixedAnswer(text, userKey, current) {
+// 提供中の体験については、AIに自由に判断させない
+function verifiedExperienceAnswer(text) {
+  const q = text.replace(/\s/g, '');
 
+  if (/藍染|藍染め|あいぞめ|染め物|染物|墨染|ワイン染/.test(q)) {
+    const d = info.dyeing;
+
+    const isBooking =
+      /予約したい|申し込|予約できますか|空き|予約希望/.test(q);
+
+    if (isBooking) return null;
+
+    if (/セット|組み合わせ/.test(q)) {
+      return (
+        'はい、藍染め・墨染め・甲州ワイン染めを実施しています。\n' +
+        '麺作り＋染め物セット：6,800円＋素材代500円〜\n' +
+        '染め物＋すりだね／七味セット：各5,300円＋素材代500円〜\n' +
+        d.url
+      );
+    }
+
+    return (
+      'はい、藍染め体験を実施しています。墨染め・甲州ワイン染めもお選びいただけます。\n' +
+      '基本料金は1名3,500円（税込）で、素材代500円〜が別途かかります。所要時間は約60〜90分です。\n' +
+      '受付は富士家です。\n' +
+      '詳細：' + d.url
+    );
+  }
+
+  const list = info.cafeExperiences.items;
+
+  const names = [
+    ['スパイスソルト', 'スパイスソルト'],
+    ['ふりかけ', 'ふりかけ'],
+    ['鯛焼き', '鯛焼き'],
+    ['たい焼き', '鯛焼き'],
+    ['クラフトコーラ', 'クラフトコーラ']
+  ];
+
+  for (const [word, name] of names) {
+    if (
+      q.includes(word) &&
+      !/予約したい|申し込|予約できますか|空き|予約希望/.test(q)
+    ) {
+      const item = list.find(x => x.name.includes(name));
+
+      if (!item) continue;
+
+      return (
+        'はい、' + item.name + '体験を実施しています。\n' +
+        '料金は1名' +
+        item.priceYen.toLocaleString('ja-JP') +
+        '円（税込）、所要時間は約30分です。\n' +
+        '詳しくはこちら：' + info.cafeExperiences.source
+      );
+    }
+  }
+
+  return null;
+}
+
+function fixedAnswer(text, userKey, current) {
   if (isGroup(text)) {
     recent.delete(userKey);
     return groupText();
   }
 
-  if (
-    /キャンセル|取り消し|予約変更|日程変更|人数変更|遅刻|遅れそう/.test(text)
-  ) {
+  if (/キャンセル|取り消し|予約変更|日程変更|人数変更|遅刻|遅れそう/.test(text)) {
     recent.delete(userKey);
     return cancellationText();
   }
 
-  if (
-    /アレルギー|アナフィラキシー|グルテン/.test(text)
-  ) {
+  if (/アレルギー|アナフィラキシー|グルテン/.test(text)) {
     recent.delete(userKey);
-
     return (
       info.policies.allergy +
-      '\n個別のご相談：' +
-      email
+      '\n個別のご相談：' + email
     );
   }
 
   if (/【予約リクエストフォーム】/.test(text)) {
     recent.delete(userKey);
-
     return (
       '旧LINE予約フォームのメッセージは自動確定しません。' +
       'ご予約についてはスタッフへお問い合わせください。\n' +
@@ -296,53 +298,49 @@ function fixedAnswer(text, userKey, current) {
     }
   }
 
-  return null;
+  return verifiedExperienceAnswer(text);
 }
 
-// AIへの基本指示
+// AIへの指示文
 const system = `
 あなたは「${info.basicInfo.name}」のLINE問い合わせ窓口です。
 
-店舗の事実は以下の店舗情報に記載されたものだけを使ってください。
+店舗の事実は以下の店舗情報だけを使用してください。
 
-曖昧・不明な料金や予約の空き、予約確定、
+重要：
+藍染め・墨染め・甲州ワイン染めは実施中です。
+「やっていない」と回答してはいけません。
+
+店舗データに登録された体験について、
+根拠なく実施していないと回答しないでください。
+
+不明な料金・予約の空き状況・予約確定・
 アレルギー対応の安全性を推測してはいけません。
 
-質問に簡潔・丁寧な敬語で答えてください。
-販促的な長文を避けてください。
+お客様には簡潔で丁寧な敬語で回答してください。
 
-質問の内容から予約希望と判断できるときは
-自分で予約を確定せず、予約日を確認してください。
+予約希望の場合は予約日を確認してください。
+AIが直接予約を確定してはいけません。
 
-予約変更・キャンセル・アレルギー等で
-個別判断が必要ならスタッフへの確認を案内してください。
+キャンセル・変更・アレルギー等は
+スタッフへの確認を案内してください。
 
-架空のURL・営業時間・体験・料金を作らないでください。
+架空のURL、料金、営業時間、メニューを作らないでください。
 
-電話受付時間は未確認のため断定しないでください。
-
-現在の予約フォームはテスト版であり、
-正式予約は確定しません。
+現在の予約フォームはテスト版です。
 
 店舗情報：
 ${JSON.stringify(info)}
 `;
 
-// OpenAI API
+// OpenAI APIへの問い合わせ
 async function callOpenAI(userText) {
   if (!OPENAI_KEY) {
-    return (
-      '詳細はスタッフへお問い合わせください。\n' +
-      email
-    );
+    return '詳細はスタッフへお問い合わせください。\n' + email;
   }
 
   const controller = new AbortController();
-
-  const timeout = setTimeout(
-    () => controller.abort(),
-    18000
-  );
+  const timeout = setTimeout(() => controller.abort(), 18000);
 
   try {
     const r = await fetch(
@@ -359,14 +357,8 @@ async function callOpenAI(userText) {
           temperature: 0.1,
           max_tokens: 350,
           messages: [
-            {
-              role: 'system',
-              content: system
-            },
-            {
-              role: 'user',
-              content: userText
-            }
+            { role: 'system', content: system },
+            { role: 'user', content: userText }
           ]
         })
       }
@@ -382,14 +374,15 @@ async function callOpenAI(userText) {
 
     return (
       obj.choices?.[0]?.message?.content?.trim() ||
-      `詳しくはスタッフへお問い合わせください。\n${email}`
+      '詳しくはスタッフへお問い合わせください。\n' + email
     );
+
   } finally {
     clearTimeout(timeout);
   }
 }
 
-// LINEへ返信
+// LINEへの返信送信
 async function sendLINE(replyToken, content) {
   const r = await fetch(
     'https://api.line.me/v2/bot/message/reply',
@@ -420,9 +413,7 @@ async function sendLINE(replyToken, content) {
 
 // LINE署名検証
 function validSignature(body, supplied) {
-  if (!SECRET || !supplied) {
-    return false;
-  }
+  if (!SECRET || !supplied) return false;
 
   const expected = crypto
     .createHmac('sha256', SECRET)
@@ -454,32 +445,21 @@ app.post(
     limit: '1mb'
   }),
   (req, res) => {
-
-    if (
-      !validSignature(
-        req.body,
-        req.get('x-line-signature')
-      )
-    ) {
+    if (!validSignature(req.body, req.get('x-line-signature'))) {
       return res.sendStatus(401);
     }
 
     let payload;
 
     try {
-      payload = JSON.parse(
-        req.body.toString('utf8')
-      );
+      payload = JSON.parse(req.body.toString('utf8'));
     } catch {
       return res.sendStatus(400);
     }
 
     res.sendStatus(200);
 
-    // 初期状態では自動返信OFF
-    if (!BOT_ENABLED) {
-      return;
-    }
+    if (!BOT_ENABLED) return;
 
     for (const event of payload.events || []) {
       if (
@@ -491,8 +471,7 @@ app.post(
       }
 
       const eventKey =
-        event.webhookEventId ||
-        event.message.id;
+        event.webhookEventId || event.message.id;
 
       if (
         eventKey &&
@@ -503,10 +482,7 @@ app.post(
       }
 
       if (eventKey) {
-        seen.set(
-          eventKey,
-          Date.now() + TTL
-        );
+        seen.set(eventKey, Date.now() + TTL);
       }
 
       const userKey =
@@ -514,56 +490,40 @@ app.post(
         event.source?.groupId ||
         event.source?.roomId;
 
-      if (!userKey) {
-        continue;
-      }
+      if (!userKey) continue;
 
       (async () => {
         try {
           const text = event.message.text.trim();
 
           const answer =
-            fixedAnswer(
-              text,
-              userKey,
-              nowJST()
-            ) ||
+            fixedAnswer(text, userKey, nowJST()) ||
             await callOpenAI(text);
 
-          await sendLINE(
-            event.replyToken,
-            answer
-          );
+          await sendLINE(event.replyToken, answer);
 
         } catch (error) {
-          console.error(
-            'Reply failed:',
-            error.message
-          );
+          console.error('Reply failed:', error.message);
         }
       })();
     }
   }
 );
 
-// 一時データを定期削除
+// 一時データの削除
 setInterval(() => {
   const t = Date.now();
 
   for (const [k, v] of recent) {
-    if (v.expires <= t) {
-      recent.delete(k);
-    }
+    if (v.expires <= t) recent.delete(k);
   }
 
   for (const [k, v] of seen) {
-    if (v <= t) {
-      seen.delete(k);
-    }
+    if (v <= t) seen.delete(k);
   }
 }, 10 * 60 * 1000).unref();
 
-// サーバー起動
+// 起動
 app.listen(PORT, () => {
   console.log(
     `Fujiya bot ready on port ${PORT}; enabled=${BOT_ENABLED}`
