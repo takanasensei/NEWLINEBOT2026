@@ -354,11 +354,8 @@ if (looksLikeBooking(text)) {
   return reservationAnswer;
 }
 
+const state = recent.get(userKey);
 
-    return bookingText(days, current);
-  }
-
-  const state = recent.get(userKey);
 
   if (
     state?.kind === 'await-date' &&
