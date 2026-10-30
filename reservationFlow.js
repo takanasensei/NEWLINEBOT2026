@@ -160,9 +160,9 @@ async function handle(text, id) {
     await notify(session);
     sessions.delete(id);
 
-    return session.type === 'update'
-      ? 'ご予約の変更希望を受け付けました。\n\n受付番号：' + session.id.slice(0, 8) + '\n\nスタッフが予約内容を確認します。変更はまだ確定していません。'
-      : 'キャンセルのご希望を受け付けました。\n\n受付番号：' + session.id.slice(0, 8) + '\n\nスタッフが予約内容とキャンセル料を確認します。キャンセルはまだ確定していません。';
+   return session.type === 'update'
+  ? 'ご予約の変更希望を受け付けました。\n\n受付番号：' + session.id.slice(0, 8) + '\n\nスタッフが予約内容を確認します。変更はまだ確定していません。'
+  : 'キャンセルのご希望を受け付けました。\n\n受付番号：' + session.id.slice(0, 8) + '\n\nスタッフが予約内容とキャンセル料を確認します。キャンセルはまだ確定していません。';
   } catch (error) {
     console.error('[reservation] notification failed', JSON.stringify({
       event_id: session.id,
