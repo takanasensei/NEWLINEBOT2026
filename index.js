@@ -7,12 +7,16 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-
+const app = express();
+const reservationFlow = require('./reservationFlow');
 
 const app = express();
 
 const reservationFlow = require('./reservationFlow');
 
+const app = express();
+const reservationFlow = require('./reservationFlow');
+const newBookingFlow = require('./newBookingFlow');
 
 const info = JSON.parse(
   fs.readFileSync(
