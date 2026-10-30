@@ -919,10 +919,18 @@ app.post(
         .catch(() => {})
         .then(async () => {
           try {
-            const answer = await respond(
-              event.message.text.trim(),
-              id
-            );
+           console.log('[LINE DEBUG] message received', {
+  messageLength: event.message.text.length
+});
+
+const answer = await respond(
+  event.message.text.trim(),
+  id
+);
+
+console.log('[LINE DEBUG] response generated', {
+  responseLength: answer.length
+});
 
             await send(
               event.replyToken,
