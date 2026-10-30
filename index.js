@@ -8,7 +8,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+
 const app = express();
+
+const reservationFlow = require('./reservationFlow');
+
 
 const info = JSON.parse(
   fs.readFileSync(
@@ -605,9 +609,31 @@ async function askAI(id, question, old) {
 // 返信内容の作成
 // =======================================
 
+
 async function respond(text, id) {
   const old = getHistory(id);
+
+  // 予約変更・キャンセル受付を優先
+  const reservationAnswer = await reservationFlow.handle(text, id);
+
+  if (reservationAnswer !== null) {
+    saveHistory(id, [
+      ...old,
+      {
+        role: 'user',
+        content: text
+      },
+      {
+        role: 'assistant',
+        content: reservationAnswer
+      }
+    ]);
+
+    return reservationAnswer;
+  }
+
   const now = nowJST();
+
 
   const facts = knownFixed(text, old);
   const date = dateDiff(text, now);
