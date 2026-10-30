@@ -5,10 +5,15 @@ const crypto = require('crypto');
 
 const sessions = new Map();
 
-const FORM = 'https://houtoutaiken.lp-web.net/contact/reserve/';
-const GROUP_FORM = 'https://fujiyoshida-houtou.lp-web.net/group-reservation/';
+const FORM =
+  'https://houtoutaiken.lp-web.net/contact/reserve/';
 
-const PHONE = process.env.STORE_PHONE || '店舗の電話番号';
+const GROUP_FORM =
+  'https://fujiyoshida-houtou.lp-web.net/group-reservation/';
+
+const PHONE =
+  process.env.STORE_PHONE || '050-6882-5580';
+
 const TTL = 24 * 60 * 60 * 1000;
 
 const FIELDS = [
@@ -21,26 +26,16 @@ const FIELDS = [
 ];
 
 const LABELS = {
-  date: 'ご希望日（例：11月5日）',
+  date: 'ご希望日（例：12月31日）',
   time: 'ご希望時間（例：13:00）',
   name: '予約者のお名前（フルネーム）',
   phone: '電話番号',
   count: '体験人数',
-  menu: '体験メニュー（ほうとう・吉田のうどん・そば等）'
+  menu: '体験メニュー'
 };
 
-function state(id) {
-  const s = sessions.get(id);
-
-  if (s && s.expires > Date.now()) {
-    return s;
-  }
-
-  sessions.delete(id);
-  return null;
-}
-
-function jstToday() {
+// 日本時間の日付
+function todayJST() {
   return new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Asia/Tokyo',
     year: 'numeric',
@@ -49,6 +44,7 @@ function jstToday() {
   }).format(new Date());
 }
 
+// 日付の妥当性
 function validDate(s) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) {
     return false;
@@ -60,59 +56,122 @@ function validDate(s) {
     d.toISOString().slice(0, 10) === s;
 }
 
-function validate(o) {
-  const a = { ...o };
+// 日付はAIに任せず、プログラムで取得
+function explicitDate(text) {
+  const today = todayJST();
+  const y = Number(today.slice(0, 4));
 
-  if (!validDate(a.date)) {
-    delete a.date;
-  }
+  const m = text.match(
+    /(?:(20\d{2})\s*[年/.-]\s*)?(\d{1,2})\s*[月/]\s*(\d{1,2})\s*日?/
+  );
 
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(a.time || '')) {
-    delete a.time;
-  }
+  if (m) {
+    let year = m[1] ? Number(m[1]) : y;
+    const month = Number(m[2]);
+    const day = Number(m[3]);
 
-  if (!/^0\d{9,10}$/.test(
-    (a.phone || '').replace(/[-\s]/g, '')
-  )) {
-    delete a.phone;
-  }
+    let d =
+      `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-  if (a.phone) {
-    a.phone = a.phone.replace(/[-\s]/g, '');
+    if (!m[1] && validDate(d) && d < today) {
+      year++;
+
+      d =
+        `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+
+    return validDate(d) ? d : null;
   }
 
   if (
-    !Number.isInteger(Number(a.count)) ||
-    Number(a.count) < 1 ||
-    Number(a.count) > 19
+    /明後日|あさって|明日|あした|今日|本日/.test(text)
   ) {
-    delete a.count;
-  } else {
-    a.count = Number(a.count);
+    const days =
+      /明後日|あさって/.test(text)
+        ? 2
+        : /明日|あした/.test(text)
+          ? 1
+          : 0;
+
+    const d = new Date(today + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + days);
+
+    return d.toISOString().slice(0, 10);
   }
 
-  if (!a.name || a.name.length > 80) {
-    delete a.name;
+  return null;
+}
+
+// 日付について言及しているか
+function dateMention(text) {
+  return /(?:20\d{2}[年/.-])?\d{1,2}\s*[月/]\s*\d{1,2}\s*日?|明後日|あさって|明日|あした|今日|本日|来週|再来週|曜日/.test(text);
+}
+
+// 予約途中のデータを取得
+function state(id) {
+  const s = sessions.get(id);
+
+  if (s && s.expires > Date.now()) {
+    return s;
   }
 
-  if (!a.menu || a.menu.length > 100) {
-    delete a.menu;
+  sessions.delete(id);
+  return null;
+}
+
+// AIが読み取った内容を検証
+function validatePatch(p) {
+  const a = {};
+
+  if (
+    typeof p.time === 'string' &&
+    /^([01]\d|2[0-3]):[0-5]\d$/.test(p.time)
+  ) {
+    a.time = p.time;
+  }
+
+  if (typeof p.phone === 'string') {
+    const n = p.phone.replace(/[-\sー]/g, '');
+
+    if (/^0\d{9,10}$/.test(n)) {
+      a.phone = n;
+    }
+  }
+
+  if (
+    Number.isInteger(Number(p.count)) &&
+    Number(p.count) >= 1 &&
+    Number(p.count) <= 19
+  ) {
+    a.count = Number(p.count);
+  }
+
+  if (
+    typeof p.name === 'string' &&
+    p.name.trim().length >= 2 &&
+    p.name.length <= 80
+  ) {
+    a.name = p.name.trim();
+  }
+
+  if (
+    typeof p.menu === 'string' &&
+    p.menu.trim().length >= 2 &&
+    p.menu.length <= 100
+  ) {
+    a.menu = p.menu.trim();
   }
 
   return a;
 }
 
+// AIで不足情報を読み取る
 async function extract(text, current) {
-  if (!process.env.OPENAI_API_KEY) {
-    throw Error('OPENAI_API_KEY missing');
-  }
-
-  const today = jstToday();
-
   const controller = new AbortController();
+
   const timer = setTimeout(
     () => controller.abort(),
-    12000
+    15000
   );
 
   try {
@@ -127,7 +186,8 @@ async function extract(text, current) {
             'Bearer ' + process.env.OPENAI_API_KEY
         },
         body: JSON.stringify({
-          model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+          model:
+            process.env.OPENAI_MODEL || 'gpt-4.1-mini',
           temperature: 0,
           response_format: {
             type: 'json_object'
@@ -136,31 +196,35 @@ async function extract(text, current) {
             {
               role: 'system',
               content: `
-予約情報抽出専用です。
+あなたは富士家の予約情報抽出器です。
 
-今日の日本日付は${today}です。
+今日は日本時間${todayJST()}です。
+富士家は年中無休です。
 
-入力の中で明示された予約情報だけを
-JSONに抽出してください。
+ユーザーの今回の文章に明示された情報だけを
+JSONで返してください。
 
 キー：
-date（YYYY-MM-DD）
 time（HH:MM）
-name
+name（フルネーム）
 phone
 count（整数）
 menu
 
 未指定はnull。
 
-「明日」「来週土曜」などは日付変換。
-日時が曖昧ならnull。
+前回値は参考情報です。
+今回の文章に明示されていない項目は
+絶対に返さないでください。
 
-前回値は上書き指定された場合のみ更新。
-質問には回答せず抽出のみ。
-個人情報を推測しない。
+日付は別処理で抽出するので返さないでください。
 
-JSONオブジェクトだけ返してください。
+時刻と人数を混同しないでください。
+
+「山梨コース」などは
+体験メニューの一部として保持してください。
+
+質問への回答はしないでください。
 `
             },
             {
@@ -176,33 +240,23 @@ JSONオブジェクトだけ返してください。
     );
 
     if (!r.ok) {
-      throw Error('OpenAI ' + r.status);
+      throw Error('OpenAI HTTP ' + r.status);
     }
 
     const response = await r.json();
-    const v = JSON.parse(
-      response.choices[0].message.content
+
+    const obj = JSON.parse(
+      response.choices?.[0]?.message?.content || '{}'
     );
 
-    const out = {};
-
-    for (const k of FIELDS) {
-      if (
-        v[k] !== null &&
-        v[k] !== undefined &&
-        v[k] !== ''
-      ) {
-        out[k] = v[k];
-      }
-    }
-
-    return validate(out);
+    return validatePatch(obj);
 
   } finally {
     clearTimeout(timer);
   }
 }
 
+// 予約内容の表示
 function summary(d) {
   return [
     `日時：${d.date} ${d.time}`,
@@ -213,10 +267,12 @@ function summary(d) {
   ].join('\n');
 }
 
+// 不足している項目
 function missing(d) {
   return FIELDS.filter(k => !d[k]);
 }
 
+// 新規予約セッション
 function newSession() {
   return {
     data: {},
@@ -226,16 +282,20 @@ function newSession() {
   };
 }
 
+// レジへの予約通知
 async function notify(s) {
-  const url = process.env.RESERVATION_EVENT_API_URL;
-  const key = process.env.RESERVATION_EVENT_API_KEY;
+  const url =
+    process.env.RESERVATION_EVENT_API_URL;
+
+  const key =
+    process.env.RESERVATION_EVENT_API_KEY;
 
   if (
     !url ||
     !key ||
     process.env.LINE_BOOKING_API_DETAILS_SUPPORTED !== 'true'
   ) {
-    throw Error('notification API details not confirmed');
+    throw Error('レジ側の詳細表示が未確認');
   }
 
   const body = {
@@ -251,6 +311,7 @@ async function notify(s) {
   };
 
   const controller = new AbortController();
+
   const timer = setTimeout(
     () => controller.abort(),
     12000
@@ -276,13 +337,18 @@ async function notify(s) {
   }
 }
 
+// 新規予約の開始判定
 const intent = t =>
-  /予約したい|予約お願いします|予約希望|予約できますか|予約を取りたい|予約したく|新規予約|LINEで予約|このLINEで予約|予約する|予約をお願い/.test(t);
+  /予約したい|予約お願いします|予約希望|予約できますか|予約を取りたい|予約したく|新規予約|LINEで予約|このLINEで予約|予約する|予約をお願い|予約したいです|予約をしたい/.test(t);
 
+// 変更・キャンセルは既存処理へ
 const excluded = t =>
   /キャンセル|取消|取り消し|変更|遅刻|予約確認|キャンセル料/.test(t);
 
+// メイン処理
 async function handle(text, id) {
+  text = String(text || '').trim();
+
   let s = state(id);
 
   if (!s) {
@@ -294,26 +360,38 @@ async function handle(text, id) {
     sessions.set(id, s);
   }
 
+  // 受付済みの予約
+  if (s.phase === 'sent') {
+    if (
+      /^(新規予約|別の予約|もう一件予約)$/.test(text)
+    ) {
+      s = newSession();
+      sessions.set(id, s);
+    } else {
+      return 'このご予約は受付済みです。別の予約は「新規予約」と送ってください。';
+    }
+  }
+
   s.expires = Date.now() + TTL;
 
+  // 予約入力を中止
   if (
-    /^(予約をやめる|予約中止|入力を中止)$/.test(text.trim())
+    /^(予約をやめる|予約中止|入力を中止)$/.test(text)
   ) {
     sessions.delete(id);
+
     return '予約入力を中止しました。';
   }
 
-  if (s.phase === 'sent') {
-    return 'すでに受付済みです。新しいご予約は「新規予約」と送ってください。';
-  }
-
+  // 送信処理中
   if (s.phase === 'sending') {
-    return '受付処理中です。少し時間をおいてお待ちください。';
+    return '受付処理中です。少しお待ちください。';
   }
 
+  // 最終確定
   if (
     s.phase === 'confirm' &&
-    /^(予約確定|確定|はい|OK|ok)$/.test(text.trim())
+    /^(予約確定|確定|はい|OK|ok)$/i.test(text)
   ) {
     s.phase = 'sending';
 
@@ -329,8 +407,8 @@ async function handle(text, id) {
         '',
         '問題がある場合のみ当店からご連絡いたします。',
         '',
-        'ほかに「すりだね作り体験」「藍染体験」もございます。',
-        'ご希望でしたら、このLINEからお知らせください。'
+        'すりだね作り体験や藍染体験もございます。',
+        '追加をご希望の場合は、このLINEからご連絡ください。'
       ].join('\n');
 
     } catch (e) {
@@ -342,69 +420,103 @@ async function handle(text, id) {
       );
 
       return [
-        '予約通知の保存が完了しませんでした。',
-        'まだ受付は確定していません。',
-        '少し時間をおいて「予約確定」と再送してください。'
+        '予約通知の保存が完了していないため、',
+        'まだ受付確定ではありません。',
+        'お手数ですが、しばらくしてから',
+        '「予約確定」と再送してください。'
       ].join('\n');
     }
   }
 
+  // 修正希望
   if (
     s.phase === 'confirm' &&
-    /^(いいえ|修正|変更したい)$/.test(text.trim())
+    /^(いいえ|修正|変更したい)$/.test(text)
   ) {
     s.phase = 'collect';
 
-    return '承知しました。修正したい項目と正しい内容をお送りください。';
+    return '修正したい項目と正しい内容をお送りください。';
   }
 
   if (s.phase === 'confirm') {
     s.phase = 'collect';
   }
 
+  // 団体予約
+  const group = text.match(
+    /(\d{1,3})\s*(?:名|人)(?!前)/
+  );
+
+  if (group && Number(group[1]) >= 20) {
+    sessions.delete(id);
+
+    return [
+      '20名以上の団体予約は専用フォームをご利用ください。',
+      GROUP_FORM
+    ].join('\n');
+  }
+
+  // 日付を取得
+  const d = explicitDate(text);
+
+  if (d) {
+    s.data.date = d;
+  } else if (dateMention(text)) {
+    return [
+      'ご希望日を確認できませんでした。',
+      '「12月31日」のようにお送りください。'
+    ].join('\n');
+  }
+
+  // 当日予約・過去日付の判定
+  if (
+    s.data.date &&
+    s.data.date <= todayJST()
+  ) {
+    if (s.data.date === todayJST()) {
+      sessions.delete(id);
+
+      return [
+        '当日のご予約はお電話でお願いいたします。',
+        PHONE
+      ].join('\n');
+    }
+
+    delete s.data.date;
+
+    return '過去の日付のため、ご希望日を改めてお知らせください。';
+  }
+
+  // 追加情報を抽出
   let patch;
 
   try {
     patch = await extract(text, s.data);
+
   } catch (e) {
     console.error(
       '[new booking] extract failed',
       e.message
     );
 
-    return '申し訳ありません。現在内容を確認できません。少し時間をおいて再度お送りください。';
+    return '申し訳ありません。内容を確認できませんでした。少し時間をおいて再度お送りください。';
   }
 
+  // 既存の情報を保持して追加
   s.data = {
     ...s.data,
     ...patch
   };
 
-  if (
-    s.data.date &&
-    s.data.date <= jstToday()
-  ) {
-    sessions.delete(id);
-
-    if (s.data.date === jstToday()) {
-      return `当日のご予約はお電話でお願いいたします。\n${PHONE}`;
-    }
-
-    return '過去の日付は予約できません。改めて「新規予約」と送ってください。';
-  }
-
-  if (s.data.count >= 20) {
-    sessions.delete(id);
-
-    return '20名以上の団体予約は専用フォームをご利用ください。\n' + GROUP_FORM;
-  }
-
+  // 不足項目を質問
   const m = missing(s.data);
 
   if (m.length) {
     return [
       'ありがとうございます！',
+      '',
       m.map(k => '・' + LABELS[k]).join('\n'),
+      '',
       'を教えてください。',
       '',
       'Webフォームからもご予約いただけます。',
@@ -412,13 +524,17 @@ async function handle(text, id) {
     ].join('\n');
   }
 
+  // 予約内容の最終確認
   s.phase = 'confirm';
 
   return [
     '【ご予約内容の確認】',
+    '',
     summary(s.data),
     '',
-    '内容に間違いがなければ「予約確定」と送ってください。',
+    '内容に間違いがなければ',
+    '「予約確定」と送ってください。',
+    '',
     '修正する場合は正しい内容を送ってください。'
   ].join('\n');
 }
