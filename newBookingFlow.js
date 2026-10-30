@@ -1,4 +1,3 @@
-
 'use strict';
 
 const crypto = require('crypto');
@@ -34,7 +33,11 @@ const LABELS = {
   menu: '体験メニュー'
 };
 
-// 日本時間の日付
+// LINE自動予約受付時間（暫定）
+// 9:00〜16:00のみ自動確定
+const AUTO_START = 9 * 60;
+const AUTO_END = 16 * 60;
+
 function todayJST() {
   return new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Asia/Tokyo',
@@ -44,7 +47,6 @@ function todayJST() {
   }).format(new Date());
 }
 
-// 日付の妥当性
 function validDate(s) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s || '')) {
     return false;
@@ -56,7 +58,6 @@ function validDate(s) {
     d.toISOString().slice(0, 10) === s;
 }
 
-// 日付はAIに任せず、プログラムで取得
 function explicitDate(text) {
   const today = todayJST();
   const y = Number(today.slice(0, 4));
@@ -71,27 +72,26 @@ function explicitDate(text) {
     const day = Number(m[3]);
 
     let d =
-      `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      `${year}-${String(month).padStart(2, '0')}-` +
+      String(day).padStart(2, '0');
 
     if (!m[1] && validDate(d) && d < today) {
       year++;
 
       d =
-        `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        `${year}-${String(month).padStart(2, '0')}-` +
+        String(day).padStart(2, '0');
     }
 
     return validDate(d) ? d : null;
   }
 
-  if (
-    /明後日|あさって|明日|あした|今日|本日/.test(text)
-  ) {
-    const days =
-      /明後日|あさって/.test(text)
-        ? 2
-        : /明日|あした/.test(text)
-          ? 1
-          : 0;
+  if (/明後日|あさって|明日|あした|今日|本日/.test(text)) {
+    const days = /明後日|あさって/.test(text)
+      ? 2
+      : /明日|あした/.test(text)
+        ? 1
+        : 0;
 
     const d = new Date(today + 'T00:00:00Z');
     d.setUTCDate(d.getUTCDate() + days);
@@ -102,12 +102,10 @@ function explicitDate(text) {
   return null;
 }
 
-// 日付について言及しているか
 function dateMention(text) {
   return /(?:20\d{2}[年/.-])?\d{1,2}\s*[月/]\s*\d{1,2}\s*日?|明後日|あさって|明日|あした|今日|本日|来週|再来週|曜日/.test(text);
 }
 
-// 予約途中のデータを取得
 function state(id) {
   const s = sessions.get(id);
 
@@ -119,7 +117,6 @@ function state(id) {
   return null;
 }
 
-// AIが読み取った内容を検証
 function validatePatch(p) {
   const a = {};
 
@@ -139,9 +136,11 @@ function validatePatch(p) {
   }
 
   if (
+    p.count !== null &&
+    p.count !== undefined &&
+    p.count !== '' &&
     Number.isInteger(Number(p.count)) &&
-    Number(p.count) >= 1 &&
-    Number(p.count) <= 19
+    Number(p.count) >= 1
   ) {
     a.count = Number(p.count);
   }
@@ -165,17 +164,12 @@ function validatePatch(p) {
   return a;
 }
 
-// AIで不足情報を読み取る
 async function extract(text, current) {
   const controller = new AbortController();
-
-  const timer = setTimeout(
-    () => controller.abort(),
-    15000
-  );
+  const timer = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const r = await fetch(
+    const response = await fetch(
       'https://api.openai.com/v1/chat/completions',
       {
         method: 'POST',
@@ -186,8 +180,7 @@ async function extract(text, current) {
             'Bearer ' + process.env.OPENAI_API_KEY
         },
         body: JSON.stringify({
-          model:
-            process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+          model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
           temperature: 0,
           response_format: {
             type: 'json_object'
@@ -195,37 +188,19 @@ async function extract(text, current) {
           messages: [
             {
               role: 'system',
-              content: `
-あなたは富士家の予約情報抽出器です。
-
-今日は日本時間${todayJST()}です。
-富士家は年中無休です。
-
-ユーザーの今回の文章に明示された情報だけを
-JSONで返してください。
-
-キー：
-time（HH:MM）
-name（フルネーム）
-phone
-count（整数）
-menu
-
-未指定はnull。
-
-前回値は参考情報です。
-今回の文章に明示されていない項目は
-絶対に返さないでください。
-
-日付は別処理で抽出するので返さないでください。
-
-時刻と人数を混同しないでください。
-
-「山梨コース」などは
-体験メニューの一部として保持してください。
-
-質問への回答はしないでください。
-`
+              content: [
+                'あなたは富士家の予約情報抽出器。',
+                '今日は日本時間' + todayJST() + '。',
+                '店は年中無休。',
+                'ユーザーの今回の文章に明示された情報だけを抽出し、JSONで返す。',
+                'キーはtime(HH:MM),name(フルネーム),phone,count(整数),menu。',
+                '未指定はnull。',
+                '前回値は参考情報であり、今回の文章に明示されていない項目は絶対に返さない。',
+                '日付は別処理で抽出するので返さない。',
+                '時刻と人数を混同しない。',
+                '「山梨コース」等は体験メニューの一部として保持。',
+                '質問への回答はしない。'
+              ].join('')
             },
             {
               role: 'user',
@@ -239,64 +214,127 @@ menu
       }
     );
 
-    if (!r.ok) {
-      throw Error('OpenAI HTTP ' + r.status);
+    if (!response.ok) {
+      throw new Error('OpenAI HTTP ' + response.status);
     }
 
-    const response = await r.json();
+    const result = await response.json();
 
     const obj = JSON.parse(
-      response.choices?.[0]?.message?.content || '{}'
+      result.choices?.[0]?.message?.content || '{}'
     );
 
     return validatePatch(obj);
-
   } finally {
     clearTimeout(timer);
   }
 }
 
-// 予約内容の表示
 function summary(d) {
   return [
-    `日時：${d.date} ${d.time}`,
-    `お名前：${d.name}様`,
-    `電話番号：${d.phone}`,
-    `人数：${d.count}名`,
-    `体験：${d.menu}`
+    '日時：' + d.date + ' ' + d.time,
+    'お名前：' + d.name + '様',
+    '電話番号：' + d.phone,
+    '人数：' + d.count + '名',
+    '体験：' + d.menu
   ].join('\n');
 }
 
-// 不足している項目
 function missing(d) {
   return FIELDS.filter(k => !d[k]);
 }
 
-// 新規予約セッション
-function newSession() {
+function newSession(id) {
   return {
     data: {},
     phase: 'collect',
     expires: Date.now() + TTL,
-    eventId: crypto.randomUUID()
+    eventId: crypto.randomUUID(),
+    lineUserId: id
   };
 }
 
-// レジへの予約通知
-async function notify(s) {
-  const url =
-    process.env.RESERVATION_EVENT_API_URL;
+function isAutoTime(time) {
+  if (!time) return true;
 
-  const key =
-    process.env.RESERVATION_EVENT_API_KEY;
+  const [hour, minute] = time.split(':').map(Number);
+  const total = hour * 60 + minute;
+
+  return total >= AUTO_START && total <= AUTO_END;
+}
+
+// LINEプロフィール取得
+async function getLineProfile(userId) {
+  const token =
+    process.env.LINE_CHANNEL_ACCESS_TOKEN ||
+    process.env.LINE_ACCESS_TOKEN;
+
+  if (!token || !userId || !userId.startsWith('U')) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(
+      'https://api.line.me/v2/bot/profile/' +
+        encodeURIComponent(userId),
+      {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          Authorization: 'Bearer ' + token
+        }
+      }
+    );
+
+    if (!response.ok) {
+      console.warn(
+        '[new booking] LINE profile HTTP',
+        response.status
+      );
+      return null;
+    }
+
+    const profile = await response.json();
+
+    return {
+      line_user_id: userId,
+      line_display_name: profile.displayName || null,
+      line_picture_url: profile.pictureUrl || null
+    };
+  } catch (error) {
+    console.warn(
+      '[new booking] profile unavailable',
+      error.message
+    );
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// レジへ新規予約通知
+async function notify(s) {
+  const url = process.env.RESERVATION_EVENT_API_URL;
+  const key = process.env.RESERVATION_EVENT_API_KEY;
+
+  if (!url || !key) {
+    throw new Error('Reservation API not configured');
+  }
 
   if (
-    !url ||
-    !key ||
     process.env.LINE_BOOKING_API_DETAILS_SUPPORTED !== 'true'
   ) {
-    throw Error('レジ側の詳細表示が未確認');
+    throw new Error('レジ側の詳細表示が未確認');
   }
+
+  if (!url.startsWith('https://')) {
+    throw new Error('Reservation API URL must use HTTPS');
+  }
+
+  const profile = await getLineProfile(s.lineUserId);
 
   const body = {
     event_id: s.eventId,
@@ -305,20 +343,19 @@ async function notify(s) {
     reservation_id:
       'LINE-' + s.eventId.slice(0, 8).toUpperCase(),
     occurred_at: new Date().toISOString(),
+
     reservation_details: {
       ...s.data
-    }
+    },
+
+    ...(profile || {})
   };
 
   const controller = new AbortController();
-
-  const timer = setTimeout(
-    () => controller.abort(),
-    12000
-  );
+  const timer = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const r = await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       signal: controller.signal,
       headers: {
@@ -328,24 +365,25 @@ async function notify(s) {
       body: JSON.stringify(body)
     });
 
-    if (!r.ok) {
-      throw Error('notify HTTP ' + r.status);
-    }
+    console.log('[new booking] notify response', {
+      event_id: s.eventId,
+      status: response.status
+    });
 
+    if (!response.ok) {
+      throw new Error('notify HTTP ' + response.status);
+    }
   } finally {
     clearTimeout(timer);
   }
 }
 
-// 新規予約の開始判定
 const intent = t =>
   /予約したい|予約お願いします|予約希望|予約できますか|予約を取りたい|予約したく|新規予約|LINEで予約|このLINEで予約|予約する|予約をお願い|予約したいです|予約をしたい/.test(t);
 
-// 変更・キャンセルは既存処理へ
 const excluded = t =>
   /キャンセル|取消|取り消し|変更|遅刻|予約確認|キャンセル料/.test(t);
 
-// メイン処理
 async function handle(text, id) {
   text = String(text || '').trim();
 
@@ -356,43 +394,61 @@ async function handle(text, id) {
       return null;
     }
 
-    s = newSession();
+    s = newSession(id);
     sessions.set(id, s);
   }
 
-  // 受付済みの予約
   if (s.phase === 'sent') {
-    if (
-      /^(新規予約|別の予約|もう一件予約)$/.test(text)
-    ) {
-      s = newSession();
+    if (/^(新規予約|別の予約|もう一件予約)$/.test(text)) {
+      s = newSession(id);
       sessions.set(id, s);
     } else {
-      return 'このご予約は受付済みです。別の予約は「新規予約」と送ってください。';
+      return [
+        'このご予約は受付済みです。',
+        '別の予約は「新規予約」と送ってください。'
+      ].join('\n');
     }
   }
 
   s.expires = Date.now() + TTL;
 
-  // 予約入力を中止
-  if (
-    /^(予約をやめる|予約中止|入力を中止)$/.test(text)
-  ) {
+  if (/^(予約をやめる|予約中止|入力を中止)$/.test(text)) {
     sessions.delete(id);
-
     return '予約入力を中止しました。';
   }
 
-  // 送信処理中
   if (s.phase === 'sending') {
     return '受付処理中です。少しお待ちください。';
   }
 
-  // 最終確定
+  // 予約確定
   if (
     s.phase === 'confirm' &&
     /^(予約確定|確定|はい|OK|ok)$/i.test(text)
   ) {
+    if (!isAutoTime(s.data.time)) {
+      s.phase = 'collect';
+      delete s.data.time;
+
+      return [
+        'ご希望の時間帯はスタッフ確認が必要です。',
+        'このLINEでは自動確定できません。',
+        '',
+        '9:00〜16:00の別のお時間をご指定いただくか、',
+        '営業時間外をご希望の場合はお電話でご相談ください。',
+        PHONE
+      ].join('\n');
+    }
+
+    if (s.data.count >= 20) {
+      sessions.delete(id);
+
+      return [
+        '20名以上の団体予約は専用フォームをご利用ください。',
+        GROUP_FORM
+      ].join('\n');
+    }
+
     s.phase = 'sending';
 
     try {
@@ -411,30 +467,29 @@ async function handle(text, id) {
         '追加をご希望の場合は、このLINEからご連絡ください。'
       ].join('\n');
 
-    } catch (e) {
+    } catch (error) {
       s.phase = 'confirm';
 
       console.error(
         '[new booking] notify failed',
-        e.message
+        error.message
       );
 
       return [
         '予約通知の保存が完了していないため、',
         'まだ受付確定ではありません。',
+        '',
         'お手数ですが、しばらくしてから',
         '「予約確定」と再送してください。'
       ].join('\n');
     }
   }
 
-  // 修正希望
   if (
     s.phase === 'confirm' &&
     /^(いいえ|修正|変更したい)$/.test(text)
   ) {
     s.phase = 'collect';
-
     return '修正したい項目と正しい内容をお送りください。';
   }
 
@@ -442,10 +497,8 @@ async function handle(text, id) {
     s.phase = 'collect';
   }
 
-  // 団体予約
-  const group = text.match(
-    /(\d{1,3})\s*(?:名|人)(?!前)/
-  );
+  // 団体人数チェック
+  const group = text.match(/(\d{1,3})\s*(?:名|人)(?!前)/);
 
   if (group && Number(group[1]) >= 20) {
     sessions.delete(id);
@@ -456,7 +509,7 @@ async function handle(text, id) {
     ].join('\n');
   }
 
-  // 日付を取得
+  // 日付取得
   const d = explicitDate(text);
 
   if (d) {
@@ -468,11 +521,8 @@ async function handle(text, id) {
     ].join('\n');
   }
 
-  // 当日予約・過去日付の判定
-  if (
-    s.data.date &&
-    s.data.date <= todayJST()
-  ) {
+  // 当日予約
+  if (s.data.date && s.data.date <= todayJST()) {
     if (s.data.date === todayJST()) {
       sessions.delete(id);
 
@@ -484,51 +534,64 @@ async function handle(text, id) {
 
     delete s.data.date;
 
-    return '過去の日付のため、ご希望日を改めてお知らせください。';
+    return [
+      '過去の日付のため、',
+      'ご希望日を改めてお知らせください。'
+    ].join('\n');
   }
 
-  // 追加情報を抽出
+  // 予約情報抽出
   let patch;
 
   try {
     patch = await extract(text, s.data);
-
-  } catch (e) {
+  } catch (error) {
     console.error(
       '[new booking] extract failed',
-      e.message
+      error.message
     );
 
-    return '申し訳ありません。内容を確認できませんでした。少し時間をおいて再度お送りください。';
+    return [
+      '申し訳ありません。',
+      '内容を確認できませんでした。',
+      '少し時間をおいて再度お送りください。'
+    ].join('\n');
   }
 
-  // 既存の情報を保持して追加
   s.data = {
     ...s.data,
     ...patch
   };
-// LINE自動受付の時間制限
-if (s.data.time) {
-  const [hour, minute] = s.data.time.split(':').map(Number);
-  const totalMinutes = hour * 60 + minute;
 
-  const start = 9 * 60;
-  const end = 16 * 60;
-
-  if (totalMinutes < start || totalMinutes > end) {
-    s.phase = 'collect';
-    delete s.data.time;
+  // 20名以上
+  if (s.data.count >= 20) {
+    sessions.delete(id);
 
     return [
-      'ご希望の時間帯は、スタッフによる確認が必要です。',
-      '営業時間外の体験も対応できる場合がございます。',
-      'このLINEでの自動予約確定はできませんので、',
-      '別のお時間をご希望の場合はお知らせください。',
+      '20名以上の団体予約は専用フォームをご利用ください。',
+      GROUP_FORM
+    ].join('\n');
+  }
+
+  // 営業時間外
+  if (s.data.time && !isAutoTime(s.data.time)) {
+    delete s.data.time;
+    s.phase = 'collect';
+
+    return [
+      'ご希望の時間帯はスタッフによる確認が必要です。',
+      '',
+      '営業時間外の体験も対応できる場合がございますが、',
+      'このLINEでの自動予約確定はできません。',
+      '',
+      '9:00〜16:00の別のお時間をご希望の場合は、',
+      'ご希望時間をお送りください。',
+      '',
       '営業時間外をご希望の場合はお電話でご相談ください。',
       PHONE
     ].join('\n');
   }
-}
+
   // 不足項目を質問
   const m = missing(s.data);
 
@@ -536,7 +599,7 @@ if (s.data.time) {
     return [
       'ありがとうございます！',
       '',
-      m.map(k => '・' + LABELS[k]).join('\n'),
+      ...m.map(k => '・' + LABELS[k]),
       '',
       'を教えてください。',
       '',
@@ -545,12 +608,11 @@ if (s.data.time) {
     ].join('\n');
   }
 
-  // 予約内容の最終確認
+  // 最終確認
   s.phase = 'confirm';
 
   return [
     '【ご予約内容の確認】',
-    '',
     summary(s.data),
     '',
     '内容に間違いがなければ',
@@ -560,6 +622,4 @@ if (s.data.time) {
   ].join('\n');
 }
 
-module.exports = {
-  handle
-};
+module.exports = { handle };
