@@ -507,7 +507,28 @@ async function handle(text, id) {
     ...s.data,
     ...patch
   };
+// LINE自動受付の時間制限
+if (s.data.time) {
+  const [hour, minute] = s.data.time.split(':').map(Number);
+  const totalMinutes = hour * 60 + minute;
 
+  const start = 9 * 60;
+  const end = 16 * 60;
+
+  if (totalMinutes < start || totalMinutes > end) {
+    s.phase = 'collect';
+    delete s.data.time;
+
+    return [
+      'ご希望の時間帯は、スタッフによる確認が必要です。',
+      '営業時間外の体験も対応できる場合がございます。',
+      'このLINEでの自動予約確定はできませんので、',
+      '別のお時間をご希望の場合はお知らせください。',
+      '営業時間外をご希望の場合はお電話でご相談ください。',
+      PHONE
+    ].join('\n');
+  }
+}
   // 不足項目を質問
   const m = missing(s.data);
 
