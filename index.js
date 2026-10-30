@@ -635,7 +635,23 @@ async function respond(text, id) {
 
     return reservationAnswer;
   }
+  const newBookingAnswer = await newBookingFlow.handle(text, id);
 
+  if (newBookingAnswer !== null) {
+    saveHistory(id, [
+      ...old,
+      {
+        role: 'user',
+        content: text
+      },
+      {
+        role: 'assistant',
+        content: newBookingAnswer
+      }
+    ]);
+
+    return newBookingAnswer;
+  }
   const now = nowJST();
 
 
