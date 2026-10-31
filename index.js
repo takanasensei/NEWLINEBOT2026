@@ -10,6 +10,7 @@ const path = require('path');
 const app = express();
 const reservationFlow = require('./reservationFlow');
 const newBookingFlow = require('./newBookingFlow');
+const confirmationAlert = require('./confirmationAlert');
 const info = JSON.parse(
   fs.readFileSync(
     path.join(__dirname, 'storeInfo.json'),
@@ -606,11 +607,60 @@ async function askAI(id, question, old) {
 // =======================================
 
 
+
 async function respond(text, id) {
   const old = getHistory(id);
 
-  // 予約変更・キャンセル受付を優先
+  // 要確認アラート
+  if (process.env.CONFIRMATION_ALERT_ENABLED === 'true') {
+    const reason = confirmationAlert.classify(text);
+
+    if (reason) {
+      try {
+        await confirmationAlert.notifyAlert({
+          text,
+          id,
+          reason
+        });
+
+        const answer =
+          'お問い合わせありがとうございます。' +
+          '内容をスタッフへ共有しました。' +
+          '確認のうえ、必要に応じてご連絡いたします。';
+
+        saveHistory(id, [
+          ...old,
+          { role: 'user', content: text },
+          { role: 'assistant', content: answer }
+        ]);
+
+        return answer;
+
+      } catch (error) {
+        console.error(
+          '[alert] notify failed',
+          error.message
+        );
+
+        const answer =
+          '申し訳ありません。現在スタッフへの通知を送信できませんでした。' +
+          'お急ぎの場合はお電話でお問い合わせください。\n' +
+          info.basicInfo.phone;
+
+        saveHistory(id, [
+          ...old,
+          { role: 'user', content: text },
+          { role: 'assistant', content: answer }
+        ]);
+
+        return answer;
+      }
+    }
+  }
+
+  // ここから下は既存の処理をそのまま残す
   const reservationAnswer = await reservationFlow.handle(text, id);
+
 
   if (reservationAnswer !== null) {
     saveHistory(id, [
