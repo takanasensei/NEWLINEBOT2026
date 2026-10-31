@@ -1,6 +1,8 @@
+
 'use strict';
 
 const crypto = require('crypto');
+const confirmationAlert = require('./confirmationAlert');
 
 const sessions = new Map();
 
@@ -33,8 +35,6 @@ const LABELS = {
   menu: '体験メニュー'
 };
 
-// LINE自動予約受付時間（暫定）
-// 9:00〜16:00のみ自動確定
 const AUTO_START = 9 * 60;
 const AUTO_END = 16 * 60;
 
@@ -191,7 +191,6 @@ async function extract(text, current) {
               content: [
                 'あなたは富士家の予約情報抽出器。',
                 '今日は日本時間' + todayJST() + '。',
-                '店は年中無休。',
                 'ユーザーの今回の文章に明示された情報だけを抽出し、JSONで返す。',
                 'キーはtime(HH:MM),name(フルネーム),phone,count(整数),menu。',
                 '未指定はnull。',
@@ -263,9 +262,9 @@ function isAutoTime(time) {
   return total >= AUTO_START && total <= AUTO_END;
 }
 
-// LINEプロフィール取得
 async function getLineProfile(userId) {
   const token =
+    process.env.CHANNEL_ACCESS_TOKEN ||
     process.env.LINE_CHANNEL_ACCESS_TOKEN ||
     process.env.LINE_ACCESS_TOKEN;
 
@@ -315,7 +314,6 @@ async function getLineProfile(userId) {
   }
 }
 
-// レジへ新規予約通知
 async function notify(s) {
   const url = process.env.RESERVATION_EVENT_API_URL;
   const key = process.env.RESERVATION_EVENT_API_KEY;
@@ -384,8 +382,112 @@ const intent = t =>
 const excluded = t =>
   /キャンセル|取消|取り消し|変更|遅刻|予約確認|キャンセル料/.test(t);
 
+function allowedExperience(menu) {
+  const s = String(menu || '');
+
+  if (
+    /ランチ|昼食|食事|定食|二郎|マシマシ|麻辣|大噴火|豚骨|藍染|墨染|ワイン染|染め物|染色/.test(s)
+  ) {
+    return false;
+  }
+
+  return /ほうとう|吉田のうどん|うどん打ち|そば打ち|蕎麦打ち|麺作り|ラーメン作り|餅作り|たい焼き作り|すりだね作り|七味作り|ふりかけ作り|スパイス作り|山梨コース/.test(s);
+}
+
+function regularLunchBooking(text) {
+  return /二郎系|マシマシ|にぼじろう|麻辣|大噴火|豚骨醤油/.test(text) &&
+    /予約|申し込|申込|席を|席の|取って|取りたい/.test(text) &&
+    !/体験/.test(text);
+}
+
+async function requestReview(text, id, reason, message) {
+  if (process.env.CONFIRMATION_ALERT_ENABLED !== 'true') {
+    return [
+      'こちらはスタッフ確認が必要なご相談です。',
+      '現在LINEからの仮受付はできません。',
+      'お電話でご相談ください。',
+      PHONE
+    ].join('\n');
+  }
+
+  try {
+    await confirmationAlert.notifyAlert({
+      text,
+      id,
+      reason
+    });
+
+    return message;
+  } catch (e) {
+    console.error(
+      '[new booking] review notify failed',
+      e.message
+    );
+
+    return [
+      'スタッフへの通知を保存できませんでした。',
+      'まだ受付できていません。',
+      'お電話でご相談ください。',
+      PHONE
+    ].join('\n');
+  }
+}
+
 async function handle(text, id) {
   text = String(text || '').trim();
+
+  if (regularLunchBooking(text)) {
+    sessions.delete(id);
+
+    return [
+      '二郎系など通常営業のランチは',
+      'ご予約を承っておりません。',
+      '予約限定ランチ（ほうとう等）については',
+      'ご相談いただけます。'
+    ].join('\n');
+  }
+
+  const reason = confirmationAlert.classify(text);
+
+  if (
+    [
+      'dyeing_request',
+      'reserved_lunch',
+      'group_experience'
+    ].includes(reason)
+  ) {
+    sessions.delete(id);
+
+    const guide =
+      reason === 'group_experience'
+        ? [
+            '20名以上の料理体験は',
+            '団体予約フォームからお申し込みください。',
+            GROUP_FORM,
+            '',
+            'お問い合わせ内容はスタッフにも共有します。',
+            '※フォーム送信前の予約確定ではありません。'
+          ].join('\n')
+        : reason === 'reserved_lunch'
+          ? [
+              '予約限定ランチ（ほうとう等）のご相談を',
+              'スタッフへ共有しました。',
+              '',
+              '日時・人数・お食事内容・お名前・電話番号を',
+              'まだお伝えでなければ、このLINEでお送りください。',
+              '',
+              '※予約確定ではありません。'
+            ].join('\n')
+          : [
+              '染め物のご相談をスタッフへ共有しました。',
+              '希望日時・人数・染めたいものなどを',
+              'お送りください。',
+              '',
+              '※予約確定ではありません。'
+            ].join('\n');
+
+    return requestReview(text, id, reason, guide);
+  }
 
   let s = state(id);
 
@@ -412,7 +514,9 @@ async function handle(text, id) {
 
   s.expires = Date.now() + TTL;
 
-  if (/^(予約をやめる|予約中止|入力を中止)$/.test(text)) {
+  if (
+    /^(予約をやめる|予約中止|入力を中止)$/.test(text)
+  ) {
     sessions.delete(id);
     return '予約入力を中止しました。';
   }
@@ -421,11 +525,20 @@ async function handle(text, id) {
     return '受付処理中です。少しお待ちください。';
   }
 
-  // 予約確定
   if (
     s.phase === 'confirm' &&
     /^(予約確定|確定|はい|OK|ok)$/i.test(text)
   ) {
+    if (!allowedExperience(s.data.menu)) {
+      s.phase = 'collect';
+
+      return [
+        'このメニューはLINEで自動確定できません。',
+        '料理体験のメニュー名をご確認ください。',
+        '予約限定ランチや染め物はスタッフ確認となります。'
+      ].join('\n');
+    }
+
     if (!isAutoTime(s.data.time)) {
       s.phase = 'collect';
       delete s.data.time;
@@ -443,10 +556,19 @@ async function handle(text, id) {
     if (s.data.count >= 20) {
       sessions.delete(id);
 
-      return [
-        '20名以上の団体予約は専用フォームをご利用ください。',
-        GROUP_FORM
-      ].join('\n');
+      return requestReview(
+        summary(s.data),
+        id,
+        'group_experience',
+        [
+          '20名以上の料理体験は',
+          '団体予約フォームからお申し込みください。',
+          GROUP_FORM,
+          '',
+          'スタッフにもお問い合わせを共有します。',
+          '※まだ予約確定ではありません。'
+        ].join('\n')
+      );
     }
 
     s.phase = 'sending';
@@ -490,6 +612,7 @@ async function handle(text, id) {
     /^(いいえ|修正|変更したい)$/.test(text)
   ) {
     s.phase = 'collect';
+
     return '修正したい項目と正しい内容をお送りください。';
   }
 
@@ -497,19 +620,28 @@ async function handle(text, id) {
     s.phase = 'collect';
   }
 
-  // 団体人数チェック
-  const group = text.match(/(\d{1,3})\s*(?:名|人)(?!前)/);
+  const group = text.match(
+    /(\d{1,3})\s*(?:名|人)(?!前)/
+  );
 
   if (group && Number(group[1]) >= 20) {
     sessions.delete(id);
 
-    return [
-      '20名以上の団体予約は専用フォームをご利用ください。',
-      GROUP_FORM
-    ].join('\n');
+    return requestReview(
+      text,
+      id,
+      'group_experience',
+      [
+        '20名以上の料理体験は',
+        '団体予約フォームからお申し込みください。',
+        GROUP_FORM,
+        '',
+        'スタッフにもお問い合わせを共有します。',
+        '※まだ予約確定ではありません。'
+      ].join('\n')
+    );
   }
 
-  // 日付取得
   const d = explicitDate(text);
 
   if (d) {
@@ -521,7 +653,6 @@ async function handle(text, id) {
     ].join('\n');
   }
 
-  // 当日予約
   if (s.data.date && s.data.date <= todayJST()) {
     if (s.data.date === todayJST()) {
       sessions.delete(id);
@@ -540,7 +671,6 @@ async function handle(text, id) {
     ].join('\n');
   }
 
-  // 予約情報抽出
   let patch;
 
   try {
@@ -563,17 +693,24 @@ async function handle(text, id) {
     ...patch
   };
 
-  // 20名以上
   if (s.data.count >= 20) {
     sessions.delete(id);
 
-    return [
-      '20名以上の団体予約は専用フォームをご利用ください。',
-      GROUP_FORM
-    ].join('\n');
+    return requestReview(
+      summary(s.data),
+      id,
+      'group_experience',
+      [
+        '20名以上の料理体験は',
+        '団体予約フォームからお申し込みください。',
+        GROUP_FORM,
+        '',
+        'スタッフにもお問い合わせを共有します。',
+        '※まだ予約確定ではありません。'
+      ].join('\n')
+    );
   }
 
-  // 営業時間外
   if (s.data.time && !isAutoTime(s.data.time)) {
     delete s.data.time;
     s.phase = 'collect';
@@ -592,7 +729,6 @@ async function handle(text, id) {
     ].join('\n');
   }
 
-  // 不足項目を質問
   const m = missing(s.data);
 
   if (m.length) {
@@ -608,7 +744,15 @@ async function handle(text, id) {
     ].join('\n');
   }
 
-  // 最終確認
+  if (!allowedExperience(s.data.menu)) {
+    return [
+      'メニューを確認させてください。',
+      'LINEで自動受付できるのは料理体験のみです。',
+      '予約限定ランチ・染め物はスタッフ確認となります。',
+      '具体的なご希望をお知らせください。'
+    ].join('\n');
+  }
+
   s.phase = 'confirm';
 
   return [
