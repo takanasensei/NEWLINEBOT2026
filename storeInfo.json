@@ -15,7 +15,7 @@
   },
   "reservation": {
     "preferred": "Web予約フォーム",
-    "url": "https://houtoutaiken.lp-web.net/contact/reserve/test.html",
+    "url": "https://houtoutaiken.lp-web.net/contact/reserve/",
     "testMode": true,
     "deadline": "翌日以降の予約は前日17:00まで（日本時間）。前日17:00を過ぎた翌日の予約と当日予約は電話で相談。",
     "sameDay": "当日予約は電話050-6882-5580で相談。空き状況や予約確定はLINEで断定しない。",
