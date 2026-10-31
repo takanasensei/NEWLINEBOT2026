@@ -219,13 +219,11 @@ function bookingGuide(days, n) {
     );
   }
 
-  return (
-    'Web予約フォームからお申し込みください。\n' +
-    info.reservation.url +
-    '\n※現在はテストフォームです。正式な予約確定通知をご確認ください。'
-  );
+return (
+  'Web予約フォームからお申し込みください。\n' +
+  info.reservation.url
+);
 }
-
 // =======================================
 // 質問に必要な店舗情報を抽出
 // =======================================
@@ -462,13 +460,16 @@ LINE問い合わせ担当AIです。
 ・わかっていることについては、はっきり回答してください。
 
 【予約について】
-・LINE自体では予約確定を行いません。
+・通常の料理体験予約はLINEで受付できる場合があります。
+・20名以上の料理体験は団体フォームへ案内します。
+・予約限定ランチと染め物の予約希望はスタッフ確認が必要です。
+・二郎系など通常営業ランチは予約できません。
+・予約可否や空席状況を推測しないでください。
 ・予約希望と通常の質問を区別してください。
 ・予約希望と別の質問が混ざっている場合は、
   別の質問にも回答してください。
 ・空き状況を推測しないでください。
 ・予約希望日は必要な場合のみ確認してください。
-・現在の予約フォームはテスト用です。
 
 【キャンセルについて】
 ・キャンセル規定の質問と、
@@ -607,12 +608,41 @@ async function askAI(id, question, old) {
 // =======================================
 
 
-
 async function respond(text, id) {
   const old = getHistory(id);
 
-  // 要確認アラート
-  if (process.env.CONFIRMATION_ALERT_ENABLED === 'true') {
+  // 返信と会話履歴をまとめて保存
+  function finish(answer) {
+    saveHistory(id, [
+      ...old,
+      { role: 'user', content: text },
+      { role: 'assistant', content: answer }
+    ]);
+    return answer;
+  }
+
+  // 1. 予約変更・キャンセルを優先
+  const reservationAnswer =
+    await reservationFlow.handle(text, id);
+
+  if (reservationAnswer !== null) {
+    return finish(reservationAnswer);
+  }
+
+  // 2. 新規予約フロー
+  // 団体体験・予約限定ランチ・染め物も
+  // newBookingFlow側で振り分ける
+  const newBookingAnswer =
+    await newBookingFlow.handle(text, id);
+
+  if (newBookingAnswer !== null) {
+    return finish(newBookingAnswer);
+  }
+
+  // 3. 予約フロー以外の要確認問い合わせ
+  if (
+    process.env.CONFIRMATION_ALERT_ENABLED === 'true'
+  ) {
     const reason = confirmationAlert.classify(text);
 
     if (reason) {
@@ -623,18 +653,11 @@ async function respond(text, id) {
           reason
         });
 
-        const answer =
-          'お問い合わせありがとうございます。' +
-          '内容をスタッフへ共有しました。' +
-          '確認のうえ、必要に応じてご連絡いたします。';
-
-        saveHistory(id, [
-          ...old,
-          { role: 'user', content: text },
-          { role: 'assistant', content: answer }
-        ]);
-
-        return answer;
+        return finish(
+          'お問い合わせをスタッフへ共有しました。' +
+          '確認のうえ、必要に応じてご連絡いたします。' +
+          '\n※予約確定ではありません。'
+        );
 
       } catch (error) {
         console.error(
@@ -642,58 +665,16 @@ async function respond(text, id) {
           error.message
         );
 
-        const answer =
-          '申し訳ありません。現在スタッフへの通知を送信できませんでした。' +
-          'お急ぎの場合はお電話でお問い合わせください。\n' +
-          info.basicInfo.phone;
-
-        saveHistory(id, [
-          ...old,
-          { role: 'user', content: text },
-          { role: 'assistant', content: answer }
-        ]);
-
-        return answer;
+        return finish(
+          'スタッフへの通知を保存できませんでした。' +
+          'お急ぎの場合はお電話でお問い合わせください。' +
+          '\n' + info.basicInfo.phone
+        );
       }
     }
   }
 
-  // ここから下は既存の処理をそのまま残す
-  const reservationAnswer = await reservationFlow.handle(text, id);
 
-
-  if (reservationAnswer !== null) {
-    saveHistory(id, [
-      ...old,
-      {
-        role: 'user',
-        content: text
-      },
-      {
-        role: 'assistant',
-        content: reservationAnswer
-      }
-    ]);
-
-    return reservationAnswer;
-  }
-  const newBookingAnswer = await newBookingFlow.handle(text, id);
-
-  if (newBookingAnswer !== null) {
-    saveHistory(id, [
-      ...old,
-      {
-        role: 'user',
-        content: text
-      },
-      {
-        role: 'assistant',
-        content: newBookingAnswer
-      }
-    ]);
-
-    return newBookingAnswer;
-  }
   const now = nowJST();
 
 
