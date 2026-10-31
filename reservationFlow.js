@@ -114,6 +114,7 @@ function looksLikeOtherQuestion(message) {
 // LINEプロフィール取得
 async function getLineProfile(userId) {
   const token =
+    process.env.CHANNEL_ACCESS_TOKEN ||
     process.env.LINE_CHANNEL_ACCESS_TOKEN ||
     process.env.LINE_ACCESS_TOKEN;
 
